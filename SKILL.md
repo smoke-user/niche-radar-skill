@@ -28,10 +28,24 @@ SEED → EXPAND → VALIDATE → SCORE → RANK → DECIDE
 ### Prerequisites
 
 ```bash
-pip install requests beautifulsoup4 lxml
+pip install -r requirements.txt
 ```
 
 No API keys required. All scripts use free, public data sources.
+
+### MCP Server Mode
+
+The skill includes an MCP server (`mcp_server.py`) that exposes all tools to any MCP-compatible agent.
+
+```bash
+# Local (stdio) — for Claude Desktop, Cursor, Cline
+python mcp_server.py
+
+# Remote (SSE) — for server deployment
+python mcp_server.py --sse --port 8080
+```
+
+MCP tools: `check_traffic`, `score_niche`, `expand_keywords`, `run_pipeline`.
 
 ### Quick Start
 

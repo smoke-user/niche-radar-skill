@@ -2,28 +2,46 @@
 
 AI-powered pipeline to discover underserved market niches. Scores keywords by demand, competition, and competitor traffic using free data sources. No API keys required.
 
-## Structure
+## Two Ways to Use
 
-```
-niche-radar-skill/
-├── SKILL.md                  ← AI agent instructions (skill format)
-├── README.md                 ← This file
-├── scripts/
-│   ├── check_traffic.py      ← Competitor traffic estimation (free signals)
-│   ├── expand_keywords.py    ← Keyword expansion via Google Autocomplete
-│   ├── score_niche.py        ← SERP + traffic → Disruption Score (0-100)
-│   └── rank_niches.py        ← Pipeline orchestrator + markdown report
-└── references/
-    ├── scoring.md            ← Disruption Score formula
-    ├── traffic_signals.md    ← 10 free traffic estimation signals
-    ├── idea_validation.md    ← Weighted idea scorer (11 criteria)
-    └── competitor_db.md      ← 40+ competitors across 4 niches
+### 1. MCP Server (for AI agents)
+
+Works with Claude Desktop, Cursor, Cline, Windsurf, OpenClaw, and any MCP-compatible client.
+
+**Local (stdio):**
+```json
+{
+  "mcpServers": {
+    "niche-radar": {
+      "command": "python",
+      "args": ["/path/to/niche-radar-skill/mcp_server.py"]
+    }
+  }
+}
 ```
 
-## Quick Start
+**Remote server (SSE):**
+```bash
+# On your server
+git clone https://github.com/smoke-user/niche-radar-skill.git
+cd niche-radar-skill
+pip install -r requirements.txt
+python mcp_server.py --sse --port 8080
+```
+
+**Available MCP tools:**
+
+| Tool | What it does |
+|---|---|
+| `check_traffic` | Estimate competitor traffic from free signals |
+| `score_niche` | SERP + traffic → Disruption Score (0-100) |
+| `expand_keywords` | Seed → 20-50 related keywords via Google Autocomplete |
+| `run_pipeline` | Full pipeline: expand → score → rank → markdown report |
+
+### 2. CLI (standalone scripts)
 
 ```bash
-pip install requests beautifulsoup4 lxml
+pip install -r requirements.txt
 
 # Full pipeline
 python scripts/rank_niches.py --seed "vibe coding testing" --depth 2
@@ -35,27 +53,45 @@ python scripts/check_traffic.py --domain "problemsifter.com"
 python scripts/score_niche.py --keyword "AI code security"
 ```
 
-## Pipeline
+## Structure
 
 ```
-SEED → EXPAND → VALIDATE → SCORE → RANK → DECIDE
- (1)     (2)       (3)       (4)     (5)     (6)
+niche-radar-skill/
+├── mcp_server.py             ← MCP server (4 tools, stdio + SSE)
+├── requirements.txt          ← Python dependencies
+├── SKILL.md                  ← AI agent instructions
+├── scripts/
+│   ├── check_traffic.py      ← Competitor traffic estimation
+│   ├── expand_keywords.py    ← Keyword expansion
+│   ├── score_niche.py        ← SERP + traffic → Disruption Score
+│   └── rank_niches.py        ← Pipeline orchestrator + report
+└── references/
+    ├── scoring.md            ← Disruption Score formula
+    ├── traffic_signals.md    ← 10 free traffic estimation signals
+    ├── idea_validation.md    ← Weighted idea scorer (11 criteria)
+    └── competitor_db.md      ← 40+ competitors across 4 niches
 ```
 
-1. **Seed** — provide 1-3 keywords or domains
-2. **Expand** — generates 20-50 related keywords via Google Autocomplete
-3. **Validate** — keeps only Stable/Rising trends
-4. **Score** — SERP analysis + competitor traffic → Disruption Score
-5. **Rank** — sorted Green/Yellow/Red report with competitor data
-6. **Decide** — manual: weighted idea scorer + Weekend Test
+## Deploy to Server
 
-## Usage with AI Agents
+```bash
+# 1. Clone
+git clone https://github.com/smoke-user/niche-radar-skill.git
+cd niche-radar-skill
 
-Add the contents of `SKILL.md` to your agent's system prompt or custom instructions. The scripts are called as standard CLI commands.
+# 2. Install deps
+pip install -r requirements.txt
+
+# 3. Run MCP server
+python mcp_server.py --sse --port 8080
+
+# 4. Or run CLI directly
+python scripts/rank_niches.py --seed "your idea here"
+```
 
 ## API Keys
 
-None required. All scripts use free, public data sources only.
+None required. All data comes from free, public sources.
 
 ## License
 
