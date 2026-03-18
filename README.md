@@ -1,23 +1,23 @@
-# 🎯 Niche Radar Skill
+# 🎯 Niche Radar
 
-Systematic niche discovery and validation pipeline for finding green-market opportunities.
+AI-powered pipeline to discover underserved market niches. Scores keywords by demand, competition, and competitor traffic using free data sources. No API keys required.
 
 ## Structure
 
 ```
 niche-radar-skill/
-├── SKILL.md                  ← Инструкции для AI-агента (Antigravity формат)
-├── README.md                 ← Этот файл
+├── SKILL.md                  ← AI agent instructions (skill format)
+├── README.md                 ← This file
 ├── scripts/
-│   ├── check_traffic.py      ← Оценка трафика конкурента (бесплатные сигналы)
-│   ├── expand_keywords.py    ← Расширение сидов через Google Autocomplete
-│   ├── score_niche.py        ← SERP + трафик → Disruption Score (0-100)
-│   └── rank_niches.py        ← Оркестратор: полный пайплайн + MD-отчёт
+│   ├── check_traffic.py      ← Competitor traffic estimation (free signals)
+│   ├── expand_keywords.py    ← Keyword expansion via Google Autocomplete
+│   ├── score_niche.py        ← SERP + traffic → Disruption Score (0-100)
+│   └── rank_niches.py        ← Pipeline orchestrator + markdown report
 └── references/
-    ├── scoring.md            ← Формула Disruption Score
-    ├── traffic_signals.md    ← 10 бесплатных сигналов трафика
-    ├── idea_validation.md    ← Взвешенный скорер идей (11 критериев)
-    └── competitor_db.md      ← База 40+ конкурентов по 4 нишам
+    ├── scoring.md            ← Disruption Score formula
+    ├── traffic_signals.md    ← 10 free traffic estimation signals
+    ├── idea_validation.md    ← Weighted idea scorer (11 criteria)
+    └── competitor_db.md      ← 40+ competitors across 4 niches
 ```
 
 ## Quick Start
@@ -25,23 +25,38 @@ niche-radar-skill/
 ```bash
 pip install requests beautifulsoup4 lxml
 
-# Полный пайплайн
+# Full pipeline
 python scripts/rank_niches.py --seed "vibe coding testing" --depth 2
 
-# Проверить трафик конкурента
+# Check a competitor's traffic
 python scripts/check_traffic.py --domain "problemsifter.com"
 
-# Оценить одну нишу
+# Score a single niche
 python scripts/score_niche.py --keyword "AI code security"
 ```
 
-## Использование в AI-агентах
+## Pipeline
 
-### Antigravity
-Скопировать папку в `~/.gemini/antigravity/skills/niche-radar/`
+```
+SEED → EXPAND → VALIDATE → SCORE → RANK → DECIDE
+ (1)     (2)       (3)       (4)     (5)     (6)
+```
 
-### Другие агенты (Claude Desktop, Cursor, OpenClaw, Cline)
-Добавить содержимое `SKILL.md` в system prompt агента. Скрипты вызываются как обычные CLI-команды.
+1. **Seed** — provide 1-3 keywords or domains
+2. **Expand** — generates 20-50 related keywords via Google Autocomplete
+3. **Validate** — keeps only Stable/Rising trends
+4. **Score** — SERP analysis + competitor traffic → Disruption Score
+5. **Rank** — sorted Green/Yellow/Red report with competitor data
+6. **Decide** — manual: weighted idea scorer + Weekend Test
+
+## Usage with AI Agents
+
+Add the contents of `SKILL.md` to your agent's system prompt or custom instructions. The scripts are called as standard CLI commands.
 
 ## API Keys
-Не нужны. Все скрипты используют бесплатные публичные источники.
+
+None required. All scripts use free, public data sources only.
+
+## License
+
+See [LICENSE](LICENSE).

@@ -130,7 +130,7 @@ When analyzing a competitor or reference product, check for:
 | Signal | What it means |
 |---|---|
 | No ad traffic at all | Either organic-only or very early stage |
-| Solo founder (ИП/LLC) | Indie project, not VC-backed (can be advantage) |
+| Solo founder (sole prop/LLC) | Indie project, not VC-backed (can be advantage) |
 | No public case studies | Product may be pre-PMF |
 | No G2/ProductHunt reviews | Not validated by market yet |
 | **0 competitors** | 🔴 Possibly no demand. Validate carefully |

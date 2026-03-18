@@ -65,7 +65,7 @@ def estimate_tier(signals: dict) -> str:
 | Service | Cost | Accuracy |
 |---|---|---|
 | SimilarWeb API | $$$$ (enterprise) | ★★★★★ |
-| SEMrush Traffic Analytics | $99+/мес | ★★★★ |
-| Ahrefs Traffic Estimate | $99+/мес | ★★★★ |
-| SEO Review Tools API | ~$50/мес | ★★★ |
+| SEMrush Traffic Analytics | $99+/mo | ★★★★ |
+| Ahrefs Traffic Estimate | $99+/mo | ★★★★ |
+| SEO Review Tools API | ~$50/mo | ★★★ |
 | Apify Traffic Estimator | Pay-per-run | ★★★ |
