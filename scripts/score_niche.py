@@ -1,17 +1,15 @@
 """
-/* LOGIC CHECK:
-- Score a niche keyword: SERP analysis + traffic check of top competitors
-- SERP signals: ad count, result count, top competitor domains
-- Then run check_traffic on top 3 competitors
-- Calculate Disruption Score per scoring.md formula
-- Edge cases: no SERP results (very niche = good), blocked Google (fallback)
-*/
-
 Niche Scorer — SERP analysis + competitor traffic → Disruption Score.
+
+Scoring formula (references/scoring.md):
+  disruption_score = demand*0.30 + forum*0.20 + ad_gap*0.15 + weakness*0.20 + trend_dir*0.15
+
+Google Trends is fetched automatically when no explicit trend_value is provided.
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -25,7 +23,6 @@ except ImportError:
     print("❌ pip install requests beautifulsoup4 lxml")
     sys.exit(1)
 
-# Import traffic checker from same directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 from check_traffic import check_traffic, clean_domain
@@ -36,6 +33,45 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 }
 DELAY = 2.0
+
+
+def fetch_trends(keyword: str) -> tuple[int, str]:
+    """Fetch Google Trends interest for a keyword.
+
+    Returns (value 0-100, direction: "rising"|"stable"|"declining"|"unknown").
+    Falls back to (50, "unknown") on any error.
+    """
+    try:
+        from pytrends.request import TrendReq
+        pt = TrendReq(hl="en-US", tz=360, timeout=(5, 20), retries=1, backoff_factor=0.5)
+        pt.build_payload([keyword], timeframe="today 12-m")
+        df = pt.interest_over_time()
+        if df is None or df.empty or keyword not in df.columns:
+            return 50, "unknown"
+
+        values = df[keyword].tolist()
+        avg = int(sum(values) / len(values))
+
+        # Direction: compare average of last 3 months to first 3 months
+        direction = "stable"
+        if len(values) >= 6:
+            recent = sum(values[-3:]) / 3
+            old = sum(values[:3]) / 3
+            if old > 0:
+                change = (recent - old) / old
+                if change > 0.15:
+                    direction = "rising"
+                elif change < -0.15:
+                    direction = "declining"
+                else:
+                    direction = "stable"
+            elif recent > 5:
+                direction = "rising"
+
+        return avg, direction
+    except Exception as e:
+        print(f"  ⚠️  Trends fetch failed: {e}")
+        return 50, "unknown"
 
 
 def analyze_serp(keyword: str) -> dict:
@@ -72,33 +108,30 @@ def analyze_serp(keyword: str) -> dict:
     # Count ads
     ad_markers = soup.find_all("span", string=re.compile(r"^(Sponsored|Ad)$", re.I))
     result["ad_count"] = len(ad_markers)
-
-    # Also check for ad divs
     ad_divs = soup.find_all("div", attrs={"data-text-ad": True})
     if ad_divs:
         result["ad_count"] = max(result["ad_count"], len(ad_divs))
 
     # Extract organic domains
+    skip = {
+        "google.com", "youtube.com", "facebook.com", "twitter.com",
+        "instagram.com", "linkedin.com", "reddit.com", "wikipedia.org",
+        "amazon.com", "gstatic.com", "googleapis.com",
+    }
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
         if href.startswith("/url?") or href.startswith("https://"):
             match = re.search(r"(?:https?://)?(?:www\.)?([a-zA-Z0-9\-]+\.[a-zA-Z]{2,})", href)
             if match:
                 domain = match.group(1)
-                if domain not in ("google.com", "youtube.com", "facebook.com",
-                                  "twitter.com", "instagram.com", "linkedin.com",
-                                  "reddit.com", "wikipedia.org", "amazon.com",
-                                  "gstatic.com", "googleapis.com"):
-                    if domain not in result["organic_domains"]:
-                        result["organic_domains"].append(domain)
-                        if len(result["organic_domains"]) >= 10:
-                            break
+                if domain not in skip and domain not in result["organic_domains"]:
+                    result["organic_domains"].append(domain)
+                    if len(result["organic_domains"]) >= 10:
+                        break
 
-    # Featured snippet
     if soup.find("div", class_=re.compile(r"featured")):
         result["has_featured_snippet"] = True
 
-    # People Also Ask
     if soup.find("div", attrs={"data-sgrd": True}) or "People also ask" in r.text:
         result["has_people_also_ask"] = True
 
@@ -113,19 +146,42 @@ TIER_TO_SCORE = {
 }
 
 
-def score_niche(keyword: str, trend_value: int = 50, trend_direction: str = "stable",
-                forum_mentions: int = 10, check_competitors: bool = True) -> dict:
-    """Full scoring pipeline for a niche keyword."""
+def score_niche(
+    keyword: str,
+    trend_value: int = 50,
+    trend_direction: str = "stable",
+    forum_mentions: int = 10,
+    check_competitors: bool = True,
+) -> dict:
+    """Full scoring pipeline for a niche keyword.
+
+    Google Trends data is fetched automatically when trend_value and
+    trend_direction are at their defaults (50 / "stable"). Pass explicit
+    values to skip auto-fetch.
+    """
     print(f"\n🎯 Scoring niche: '{keyword}'")
     print("-" * 50)
 
-    # 1. SERP Analysis
+    # Auto-fetch trends when caller uses defaults
+    trends_source = "default"
+    if trend_value == 50 and trend_direction == "stable":
+        print("  📈 Fetching Google Trends...")
+        fetched_value, fetched_direction = fetch_trends(keyword)
+        if fetched_direction != "unknown":
+            trend_value = fetched_value
+            trend_direction = fetched_direction
+            trends_source = "auto"
+            print(f"     → {trend_value}/100, direction: {trend_direction}")
+        else:
+            print(f"     → Trends unavailable, using defaults")
+
+    # SERP Analysis
     print("  📊 Analyzing SERP...")
     serp = analyze_serp(keyword)
     print(f"     → {serp['total_results']:,} results, {serp['ad_count']} ads, "
           f"{len(serp['organic_domains'])} competitors")
 
-    # 2. Check traffic of top 3 competitors
+    # Traffic check for top 3 competitors
     competitor_scores = []
     if check_competitors and serp["organic_domains"]:
         top_3 = serp["organic_domains"][:3]
@@ -140,37 +196,30 @@ def score_niche(keyword: str, trend_value: int = 50, trend_direction: str = "sta
             })
             print(f"     → {domain}: {traffic['traffic_tier']}")
 
-    # 3. Calculate Disruption Score
-    # Demand signal (from Trends)
+    # Disruption Score calculation (scoring.md formula)
     demand = trend_value  # 0-100
 
-    # Forum activity
-    import math
     forum_score = min(100, math.log10(max(1, forum_mentions)) * 25)
 
-    # Ad gap
     ad_gap = max(0, 100 - serp["ad_count"] * 12.5)
 
-    # Competitor weakness (average of top 3, or 80 if no competitors found)
     if competitor_scores:
         competitor_weakness = sum(c["weakness_score"] for c in competitor_scores) / len(competitor_scores)
     else:
-        competitor_weakness = 80  # No competitors found = green
+        competitor_weakness = 80  # No competitors = green signal
 
-    # Trend direction
     trend_map = {"rising": 100, "stable": 60, "declining": 20, "unknown": 50}
     trend_dir_score = trend_map.get(trend_direction.lower(), 50)
 
-    # Final score
     disruption_score = round(
         demand * 0.30 +
         forum_score * 0.20 +
         ad_gap * 0.15 +
         competitor_weakness * 0.20 +
-        trend_dir_score * 0.15, 1
+        trend_dir_score * 0.15,
+        1,
     )
 
-    # Color
     if disruption_score >= 70:
         color = "🟢 GREEN"
     elif disruption_score >= 40:
@@ -181,7 +230,7 @@ def score_niche(keyword: str, trend_value: int = 50, trend_direction: str = "sta
     print(f"\n  📊 Disruption Score: {disruption_score}/100 {color}")
     print(f"     Breakdown: demand={demand:.0f} forum={forum_score:.0f} "
           f"ad_gap={ad_gap:.0f} weakness={competitor_weakness:.0f} "
-          f"trend={trend_dir_score:.0f}")
+          f"trend={trend_dir_score:.0f} (trends_source={trends_source})")
 
     return {
         "keyword": keyword,
@@ -193,6 +242,7 @@ def score_niche(keyword: str, trend_value: int = 50, trend_direction: str = "sta
             "ad_gap": round(ad_gap, 1),
             "competitor_weakness": round(competitor_weakness, 1),
             "trend_direction": trend_dir_score,
+            "trends_source": trends_source,
         },
         "serp": {
             "total_results": serp["total_results"],
@@ -237,9 +287,13 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("🧪 Self-test: scoring 'vibe coding testing tool'")
-        result = score_niche("vibe coding testing tool", trend_value=60,
-                             trend_direction="rising", check_competitors=False)
+        print("🧪 Self-test: scoring 'vibe coding testing tool' (no-traffic mode)")
+        result = score_niche(
+            "vibe coding testing tool",
+            trend_value=60,
+            trend_direction="rising",
+            check_competitors=False,
+        )
         print(f"\n✅ Self-test passed: {result['disruption_score']}/100 {result['color']}")
     else:
         main()

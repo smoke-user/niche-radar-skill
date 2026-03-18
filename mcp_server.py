@@ -89,7 +89,12 @@ def expand_keywords(seed: str, depth: int = 2, max_keywords: int = 30) -> str:
 
 
 @mcp.tool
-def run_pipeline(seed: str, depth: int = 2, max_keywords: int = 15) -> str:
+def run_pipeline(
+    seed: str,
+    depth: int = 2,
+    max_keywords: int = 15,
+    check_competitors: bool = True,
+) -> str:
     """Run the full niche discovery pipeline: expand keywords → score each → rank → report.
 
     Returns a markdown report with Green/Yellow/Red niches sorted by Disruption Score.
@@ -98,10 +103,12 @@ def run_pipeline(seed: str, depth: int = 2, max_keywords: int = 15) -> str:
         seed: Comma-separated seed keywords (e.g. "vibe coding testing")
         depth: Keyword expansion depth (1-3, default 2)
         max_keywords: Max keywords to analyze (default 15, higher = slower)
+        check_competitors: Whether to check competitor traffic (default True, False = much faster)
     """
     from rank_niches import run_full_pipeline
     seeds = [s.strip() for s in seed.split(",")]
-    report = run_full_pipeline(seeds, depth=depth, max_kw=max_keywords)
+    report = run_full_pipeline(seeds, depth=depth, max_kw=max_keywords,
+                               check_competitors=check_competitors)
     return report
 
 

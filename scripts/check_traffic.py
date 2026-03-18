@@ -1,14 +1,15 @@
 """
-/* LOGIC CHECK:
-- Estimate competitor traffic from FREE signals only (no API keys)
-- Signals: indexed pages (site:), domain age (whois), brand trend (Trends),
-  HTML meta (OG/Twitter/analytics), Wayback snapshot count
-- Output: traffic tier (Tiny/Small/Medium/Large) + confidence
-- Rate limit: 2s delay between HTTP calls
-- Edge cases: domains behind Cloudflare, parked domains, 403 blocks
-*/
-
 Competitor Traffic Estimator — estimate site traffic from free signals.
+
+Signals used:
+  1. Indexed pages   — Google site: query
+  2. Domain age      — WHOIS lookup (python-whois)
+  3. Brand trend     — Google Trends (pytrends, best-effort)
+  4. Tech stack/meta — HTML homepage analysis
+  5. Wayback count   — Wayback CDX API
+
+Rate limiting: 2s delay between HTTP calls.
+Results are cached in-memory within a process (useful for pipeline runs).
 """
 
 import argparse
@@ -36,12 +37,16 @@ HEADERS = {
 }
 DELAY = 2.0  # seconds between requests
 
+# In-memory cache for the lifetime of the process (avoids re-checking same domain in a pipeline)
+_traffic_cache: dict[str, dict] = {}
+
 
 @dataclass
 class TrafficSignals:
     domain: str
     indexed_pages: int = 0
     domain_age_years: float = 0.0
+    brand_trend: int = 0
     has_og_tags: bool = False
     has_twitter_card: bool = False
     has_analytics: bool = False
@@ -62,8 +67,13 @@ def clean_domain(raw: str) -> str:
     return raw.replace("www.", "").split("/")[0]
 
 
+def _brand_from_domain(domain: str) -> str:
+    """Extract brand name from domain (e.g. 'problemsifter.com' → 'problemsifter')."""
+    return domain.split(".")[0]
+
+
 def fetch(url: str, timeout: int = 10) -> Optional[requests.Response]:
-    """Safe HTTP GET with delay."""
+    """Safe HTTP GET with rate-limit delay."""
     time.sleep(DELAY)
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
@@ -74,19 +84,67 @@ def fetch(url: str, timeout: int = 10) -> Optional[requests.Response]:
 
 
 def check_indexed_pages(domain: str) -> int:
-    """Estimate indexed pages via Google 'site:' query (scrape count)."""
+    """Estimate indexed pages via Google 'site:' query."""
     url = f"https://www.google.com/search?q=site:{domain}&num=1"
     r = fetch(url)
     if not r or r.status_code != 200:
         return 0
-    # Look for "About X results"
+
+    # Primary: "About X results" text
     match = re.search(r"About ([\d,]+) results", r.text)
     if match:
         return int(match.group(1).replace(",", ""))
-    # Fallback: check if any results exist
+
+    # Secondary: localized result stats div (non-English Google)
+    stats_div = BeautifulSoup(r.text, "lxml").find("div", id="result-stats")
+    if stats_div:
+        nums = re.findall(r"[\d,]+", stats_div.get_text())
+        if nums:
+            try:
+                return int(nums[0].replace(",", ""))
+            except ValueError:
+                pass
+
+    # Tertiary: count organic result headings as a proxy
+    soup = BeautifulSoup(r.text, "lxml")
     if "did not match any documents" in r.text:
         return 0
-    return 1  # At least some results
+    h3_count = len(soup.find_all("h3"))
+    if h3_count > 0:
+        # We got results but can't read the exact count — treat as small indexed site
+        return 10
+    return 0
+
+
+def check_domain_age(domain: str) -> float:
+    """Return domain age in years using WHOIS. Returns 0.0 on failure."""
+    try:
+        import whois  # python-whois package
+        w = whois.whois(domain)
+        creation_date = w.creation_date
+        if isinstance(creation_date, list):
+            creation_date = creation_date[0]
+        if creation_date and isinstance(creation_date, datetime):
+            age = (datetime.now() - creation_date).days / 365.25
+            return round(max(0.0, age), 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+def check_brand_trend(domain: str) -> int:
+    """Return Google Trends interest (0-100) for the brand name. Returns 0 on failure."""
+    brand = _brand_from_domain(domain)
+    try:
+        from pytrends.request import TrendReq
+        pt = TrendReq(hl="en-US", tz=360, timeout=(5, 20), retries=1, backoff_factor=0.5)
+        pt.build_payload([brand], timeframe="today 12-m")
+        df = pt.interest_over_time()
+        if df is not None and not df.empty and brand in df.columns:
+            return int(df[brand].mean())
+    except Exception:
+        pass
+    return 0
 
 
 def check_homepage(domain: str) -> dict:
@@ -114,24 +172,19 @@ def check_homepage(domain: str) -> dict:
 
     soup = BeautifulSoup(r.text, "lxml")
 
-    # Title
     if soup.title:
         signals["title"] = soup.title.string or ""
 
-    # Meta description
     meta = soup.find("meta", attrs={"name": "description"})
     if meta:
         signals["meta_description"] = meta.get("content", "")
 
-    # OG tags
     if soup.find("meta", attrs={"property": re.compile(r"^og:")}):
         signals["has_og_tags"] = True
 
-    # Twitter card
     if soup.find("meta", attrs={"name": re.compile(r"^twitter:")}):
         signals["has_twitter_card"] = True
 
-    # Analytics (GA, GTM, Hotjar, Amplitude, Mixpanel, Plausible)
     html_lower = r.text.lower()
     analytics_markers = [
         "google-analytics.com", "googletagmanager.com", "gtag(",
@@ -141,7 +194,6 @@ def check_homepage(domain: str) -> dict:
     if any(m in html_lower for m in analytics_markers):
         signals["has_analytics"] = True
 
-    # Tech stack detection
     if "wp-content" in html_lower or "wordpress" in html_lower:
         signals["tech_stack"] = "WordPress"
     elif "next" in html_lower and "__next" in html_lower:
@@ -172,23 +224,35 @@ def check_wayback(domain: str) -> int:
     r = fetch(url, timeout=15)
     if not r or r.status_code != 200:
         return 0
-    # The CDX API returns count via separate endpoint
-    count_url = f"https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&limit=0&showNumPages=true"
+    count_url = (
+        f"https://web.archive.org/cdx/search/cdx?url={domain}/*"
+        f"&output=json&limit=0&showNumPages=true"
+    )
     r2 = fetch(count_url, timeout=15)
     if not r2 or r2.status_code != 200:
         return 0
     try:
         pages = int(r2.text.strip())
-        return pages * 10  # Each page ≈ 10 snapshots
+        return pages * 10  # Each CDX page ≈ 10 snapshots
     except (ValueError, TypeError):
         return 0
 
 
 def estimate_tier(signals: TrafficSignals) -> tuple[str, int]:
-    """Classify traffic tier and confidence score."""
+    """Classify traffic tier and return a confidence score (0–130 scale).
+
+    Scoring per references/traffic_signals.md:
+      indexed_pages  → up to 30 pts
+      domain_age     → up to 20 pts
+      brand_trend    → up to 30 pts
+      social/meta    → up to 15 pts
+      wayback        → up to 15 pts
+      tech/analytics → up to 20 pts
+    Thresholds: Large ≥70 | Medium ≥45 | Small ≥25 | Tiny <25
+    """
     score = 0
 
-    # Indexed pages
+    # Indexed pages (up to 30)
     if signals.indexed_pages > 10000:
         score += 30
     elif signals.indexed_pages > 1000:
@@ -198,7 +262,23 @@ def estimate_tier(signals: TrafficSignals) -> tuple[str, int]:
     elif signals.indexed_pages > 10:
         score += 5
 
-    # Wayback snapshots
+    # Domain age (up to 20)
+    if signals.domain_age_years > 5:
+        score += 20
+    elif signals.domain_age_years > 2:
+        score += 10
+    elif signals.domain_age_years > 1:
+        score += 5
+
+    # Brand Google Trends (up to 30)
+    if signals.brand_trend > 50:
+        score += 30
+    elif signals.brand_trend > 20:
+        score += 15
+    elif signals.brand_trend > 5:
+        score += 5
+
+    # Wayback snapshots (up to 15)
     if signals.wayback_snapshots > 5000:
         score += 15
     elif signals.wayback_snapshots > 500:
@@ -206,26 +286,26 @@ def estimate_tier(signals: TrafficSignals) -> tuple[str, int]:
     elif signals.wayback_snapshots > 50:
         score += 5
 
-    # Social/meta signals
+    # Social / meta signals (up to 10)
     if signals.has_og_tags:
         score += 5
     if signals.has_twitter_card:
         score += 5
+
+    # Tech investment (up to 20)
     if signals.has_analytics:
         score += 10
-
-    # Tech stack investment
     if signals.has_custom_build:
-        score += 10
+        score += 5
     if signals.tech_stack in ("Next.js", "Nuxt.js", "React SPA"):
         score += 5
 
-    # Classification
-    if score >= 60:
+    # Classify (thresholds from traffic_signals.md)
+    if score >= 70:
         tier = "Large (100K-1M+)"
-    elif score >= 40:
+    elif score >= 45:
         tier = "Medium (10K-100K)"
-    elif score >= 20:
+    elif score >= 25:
         tier = "Small (1K-10K)"
     else:
         tier = "Tiny (<1K)"
@@ -234,8 +314,14 @@ def estimate_tier(signals: TrafficSignals) -> tuple[str, int]:
 
 
 def check_traffic(domain: str, verbose: bool = True) -> dict:
-    """Full traffic estimation for a domain."""
+    """Full traffic estimation for a domain. Results are cached in-memory."""
     domain = clean_domain(domain)
+
+    if domain in _traffic_cache:
+        if verbose:
+            print(f"\n💾 Cache hit: {domain}")
+        return _traffic_cache[domain]
+
     if verbose:
         print(f"\n🔍 Analyzing: {domain}")
         print("=" * 50)
@@ -249,7 +335,21 @@ def check_traffic(domain: str, verbose: bool = True) -> dict:
     if verbose:
         print(f"     → {signals.indexed_pages:,} pages")
 
-    # 2. Homepage analysis
+    # 2. Domain age
+    if verbose:
+        print("  📅 Checking domain age (WHOIS)...")
+    signals.domain_age_years = check_domain_age(domain)
+    if verbose:
+        print(f"     → {signals.domain_age_years:.1f} years")
+
+    # 3. Brand trend
+    if verbose:
+        print(f"  📈 Checking brand trend ('{_brand_from_domain(domain)}')...")
+    signals.brand_trend = check_brand_trend(domain)
+    if verbose:
+        print(f"     → Trends interest: {signals.brand_trend}/100")
+
+    # 4. Homepage analysis
     if verbose:
         print("  🏠 Analyzing homepage...")
     hp = check_homepage(domain)
@@ -265,14 +365,13 @@ def check_traffic(domain: str, verbose: bool = True) -> dict:
         print(f"     → Tech: {signals.tech_stack} | OG: {signals.has_og_tags} | "
               f"Analytics: {signals.has_analytics}")
 
-    # 3. Wayback snapshots
+    # 5. Wayback snapshots
     if verbose:
         print("  📸 Checking Wayback Machine...")
     signals.wayback_snapshots = check_wayback(domain)
     if verbose:
         print(f"     → ~{signals.wayback_snapshots:,} snapshots")
 
-    # Estimate
     tier, confidence = estimate_tier(signals)
 
     result = {
@@ -283,8 +382,10 @@ def check_traffic(domain: str, verbose: bool = True) -> dict:
         "checked_at": datetime.now().isoformat(),
     }
 
+    _traffic_cache[domain] = result
+
     if verbose:
-        print(f"\n  📊 Result: {tier} (confidence: {confidence}/100)")
+        print(f"\n  📊 Result: {tier} (confidence: {confidence}/130)")
         print("=" * 50)
 
     return result
@@ -310,7 +411,6 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        # Self-test
         print("🧪 Self-test mode: checking problemsifter.com")
         result = check_traffic("problemsifter.com")
         print(f"\n✅ Self-test passed: {result['traffic_tier']}")
