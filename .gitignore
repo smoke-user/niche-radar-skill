@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .tmp/
 .env
+
+# Private data — scorer results, personal niche analysis
+niche_scorer_*.md
+*стратегия*
+*результат*
